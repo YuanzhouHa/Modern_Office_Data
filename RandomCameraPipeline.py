@@ -188,6 +188,7 @@ def bind_camera_to_level_sequence(level_sequence, camera, character_location, st
         
 def add_actor_to_layer(actor, layer_name="character"):
     layer_subsystem = unreal.get_editor_subsystem(unreal.LayersSubsystem)
+    # Add the actor to the specified layer， if it doesn't exist, add_actor_to_layer will create it
     layer_subsystem.add_actor_to_layer(actor, layer_name)
     
 def render(output_path, start_frame=0, num_frames=0, mode="rgb"):
@@ -240,7 +241,7 @@ def render(output_path, start_frame=0, num_frames=0, mode="rgb"):
     #     set_709_color_space(job)
 
     png_settings = job.get_configuration().find_or_add_setting_by_class(unreal.MoviePipelineImageSequenceOutput_PNG)
-    png_settings.set_editor_property('write_alpha', True)
+    #png_settings.set_editor_property('write_alpha', False)
 
     # set render presets for given location
     # set_render_presets(self.rendering_stage, render_presets)
@@ -266,8 +267,10 @@ def render(output_path, start_frame=0, num_frames=0, mode="rgb"):
 
         # TODO: call render again with normals configuration
         if mode == 'rgb':
+            png_settings.set_editor_property('write_alpha', False)
             render(output_path=output_path, mode="normals")
         elif mode == 'normals':
+            png_settings.set_editor_property('write_alpha', True)
             render(output_path=output_path, mode="rgb_alpha")
         # elif mode == 'rgb_alpha':    
         #     unreal.SystemLibrary.quit_editor()
@@ -338,8 +341,9 @@ if __name__ == '__main__':
     #exit()
 
     actor = spawn_actor(asset_path=selected_skeletal_mesh_path, location=location)
-    spawnable_actor = level_sequence.add_spawnable_from_instance(actor)
-    add_actor_to_layer(actor, layer_name="character")  
+    #spawnable_actor = level_sequence.add_spawnable_from_instance(actor)
+    add_actor_to_layer(actor, layer_name="character") 
+    spawnable_actor = level_sequence.add_spawnable_from_instance(actor) 
     add_animation_to_actor(spawnable_actor, animation_path=selected_animation_path)
 
 
