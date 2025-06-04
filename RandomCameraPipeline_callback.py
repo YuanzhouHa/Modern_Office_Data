@@ -1,7 +1,9 @@
 import random
 import re
+import os
 import unreal
 from datetime import datetime
+from typing import Optional, Callable
 
 def clean_sequencer(level_sequence):
     bindings = level_sequence.get_bindings()
@@ -11,7 +13,7 @@ def clean_sequencer(level_sequence):
         #     b.remove()
         b.remove()
    
-def select_random_asset(assets_path, asset_class=None):
+def select_random_asset(assets_path, asset_class=None, predicate:Optional[Callable]=None):
     eal = unreal.EditorAssetLibrary()
     assets = eal.list_assets(assets_path)
 
@@ -19,10 +21,19 @@ def select_random_asset(assets_path, asset_class=None):
         filtered_assets = []
         for asset in assets:
             try:
-                if unreal.EditorAssetLibrary.find_asset_data(asset).asset_class_path.asset_name == asset_class:
+                asset_name = os.path.splitext(asset)[0]
+                if eal.find_asset_data(asset_name).asset_class_path.asset_name == asset_class:
                     filtered_assets.append(asset)
             except:
                 continue
+
+        assets = filtered_assets
+
+    if predicate is not None:
+        filtered_assets = []
+        for asset in assets:
+            if predicate(asset):
+                filtered_assets.append(asset)
 
         assets = filtered_assets
 
@@ -115,7 +126,7 @@ def random_cubemap(skylight):
         # Update the skylight to apply the new cubemap
         skylight_comp.recapture_sky() 
 
-def bind_camera_to_level_sequence(level_sequence, camera):
+def bind_camera_to_level_sequence(level_sequence, camera, character_location, start_frame=0, num_frames=0, move_radius=500):
     # Get the Camera Cuts track manually
     camera_cuts_track = None
     for track in level_sequence.get_master_tracks():
@@ -140,12 +151,98 @@ def bind_camera_to_level_sequence(level_sequence, camera):
             section.set_camera_binding_id(camera_binding_id)
             print("Camera cut updated to use:", camera.get_name())
 
-def render(output_path, start_frame=0, num_frames=0, mode="rgb"):
+    # Add Transform Track
+    transform_track = camera_binding.add_track(unreal.MovieScene3DTransformTrack)
+    transform_section = transform_track.add_section()
+    transform_section.set_range(start_frame, start_frame + num_frames)
+
+    # Get transform channels
+    channels = transform_section.get_all_channels()
+    loc_x_channel = channels[0]
+    loc_y_channel = channels[1]
+    loc_z_channel = channels[2]
+
+    # Get original camera location as center point
+    #center_location = camera.get_actor_location()
+    center_location = character_location +  unreal.Vector(0.0, 0.0, 100.0)  # Offset to avoid ground collision
+    # Generate random keyframes
+    # frames = sorted(random.sample(range(start_frame+1, start_frame+num_frames-1), num_keyframes-2))
+    frames = [start_frame, start_frame+num_frames]
+
+    # Add keyframes
+    for frame in frames:
+        # Randomize location around the center within a radius
+        random_location = center_location + unreal.Vector(
+            random.uniform(-move_radius, move_radius),
+            random.uniform(-move_radius, move_radius),
+            random.uniform(-move_radius/2, move_radius/2)
+        )
+
+        frame_number = unreal.FrameNumber(frame)
+
+        # Add location keys
+        loc_x_channel.add_key(frame_number, random_location.x)
+        loc_y_channel.add_key(frame_number, random_location.y)
+        loc_z_channel.add_key(frame_number, random_location.z)
+        
+def add_actor_to_layer(actor, layer_name="character"):
+    layer_subsystem = unreal.get_editor_subsystem(unreal.LayersSubsystem)
+    # Add the actor to the specified layer， if it doesn't exist, add_actor_to_layer will create it
+    layer_subsystem.add_actor_to_layer(actor, layer_name)
+
+RENDER_TIMES = 3
+current_round = 0  # 全局计数
+ # 全局唯一时间戳，防止路径冲突
+
+def render_one_round():
+    global current_round
+    current_round += 1
+    unreal.log(f"========== Start Render Round {current_round}/{RENDER_TIMES} ==========")
+
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S") 
+    output_path = f"D:\\SyntheticData\\MordenOffice\\RandomCamera\\{timestamp}\\"
+    
+    level_sequence = unreal.EditorAssetLibrary.load_asset('/Game/RenderSequencer.RenderSequencer')
+    clean_sequencer(level_sequence)
+
+    cameras, target_points, skylight = find_relevant_assets(level_sequence)
+    random_keys = [k for k in cameras.keys() if k in target_points.keys()]
+    random_key = random.choice(random_keys)
+    camera = cameras[random_key]
+    target_point = target_points[random_key]
+    random_cubemap(skylight)
+
+    location = target_point.get_actor_location()
+
+    selected_skeletal_mesh_path = select_random_asset('/Game/ActorcoreCharacterBaked', asset_class='SkeletalMesh')
+    a_pose_animation_name = os.path.splitext(selected_skeletal_mesh_path)[-1] + "_Anim"
+    def not_a_pose_animation(asset:str):
+        return not asset.endswith(a_pose_animation_name)
+    baked_animation_directory_path = os.path.dirname(selected_skeletal_mesh_path)
+    selected_animation_path = select_random_asset(baked_animation_directory_path, asset_class="AnimSequence", predicate=not_a_pose_animation)
+
+    print(f"[{current_round}/{RENDER_TIMES}] Skeletal Mesh: {selected_skeletal_mesh_path}")
+    print(f"[{current_round}/{RENDER_TIMES}] Animation: {selected_animation_path}")
+
+    actor = spawn_actor(asset_path=selected_skeletal_mesh_path, location=location)
+    add_actor_to_layer(actor, layer_name="character")
+    spawnable_actor = level_sequence.add_spawnable_from_instance(actor)
+    add_animation_to_actor(spawnable_actor, animation_path=selected_animation_path)
+
+    unreal.get_editor_subsystem(unreal.EditorActorSubsystem).destroy_actor(actor)
+    bind_camera_to_level_sequence(level_sequence, camera, location, start_frame=0, num_frames=300, move_radius=800)
+    unreal.log(f"[{current_round}/{RENDER_TIMES}] Selected character and animation: {selected_skeletal_mesh_path}, {selected_animation_path}")
+
+   
+    # 关键：把“继续下一轮”动作绑定到movie_finished回调里
+    render_with_callback(output_path=output_path, mode="rgb")
+
+# 这里改写你的render函数，让它支持外部回调
+def render_with_callback(output_path, start_frame=0, num_frames=0, mode="rgb"):
     subsystem = unreal.get_editor_subsystem(unreal.MoviePipelineQueueSubsystem)
     pipelineQueue = subsystem.get_queue()
-    # delete all jobs before rendering
     for job in pipelineQueue.get_jobs():
-        pipelineQueue.delete_job(job)                                                                                                                                                           
+        pipelineQueue.delete_job(job)
 
     ues = unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem)
     current_world = ues.get_editor_world()
@@ -154,23 +251,21 @@ def render(output_path, start_frame=0, num_frames=0, mode="rgb"):
     job = pipelineQueue.allocate_new_job(unreal.MoviePipelineExecutorJob)
     job.set_editor_property('map', unreal.SoftObjectPath(map_name))
     job.set_editor_property('sequence', unreal.SoftObjectPath('/Game/RenderSequencer'))
-
-    # This is already set (because we duplicated the main queue) but this is how you set what sequence is rendered for this job
     job.author = "Voia"
     job.job_name = "Synthetic Data"
 
-    # Example of configuration loading
     if mode == 'rgb':
         newConfig = unreal.load_asset("/Game/MoviePipelinePrimaryConfig/RGB")
-    else:
+    elif mode == 'normals':
         newConfig = unreal.load_asset("/Game/MoviePipelinePrimaryConfig/CameraNormal")
+    else:
+        newConfig = unreal.load_asset("/Game/MoviePipelinePrimaryConfig/Alpha_Mask")
     job.set_configuration(newConfig)
 
-    # Now we can configure the job. Calling find_or_add_setting_by_class is how you add new settings or find the existing one.
     outputSetting = job.get_configuration().find_or_add_setting_by_class(unreal.MoviePipelineOutputSetting)
-    outputSetting.output_resolution = unreal.IntPoint(1920, 1080) # HORIZONTAL
+    outputSetting.output_resolution = unreal.IntPoint(1920, 1080)
     outputSetting.file_name_format = "Image.{render_pass}.{frame_number}"
-    outputSetting.flush_disk_writes_per_shot = True  # Required for the OnIndividualShotFinishedCallback to get called.
+    outputSetting.flush_disk_writes_per_shot = True
     outputSetting.output_directory = unreal.DirectoryPath(path=f'{output_path}/{mode}')
     use_custom_playback_range = num_frames > 0
     outputSetting.use_custom_playback_range = use_custom_playback_range
@@ -178,120 +273,56 @@ def render(output_path, start_frame=0, num_frames=0, mode="rgb"):
     outputSetting.custom_end_frame = start_frame + num_frames
 
     renderPass = job.get_configuration().find_or_add_setting_by_class(unreal.MoviePipelineDeferredPassBase)
-
-    # remove default
     jpg_settings = job.get_configuration().find_setting_by_class(unreal.MoviePipelineImageSequenceOutput_JPG)
     job.get_configuration().remove_setting(jpg_settings)
-    # if cs_709:
-    #     set_709_color_space(job)
-
     png_settings = job.get_configuration().find_or_add_setting_by_class(unreal.MoviePipelineImageSequenceOutput_PNG)
-    png_settings.set_editor_property('write_alpha', False)
-
-    # set render presets for given location
-    # set_render_presets(self.rendering_stage, render_presets)
-
+    # 可根据mode切换alpha写入
+    if mode == 'rgb':
+        png_settings.set_editor_property('write_alpha', False)
+    else:
+        png_settings.set_editor_property('write_alpha', True)
     job.get_configuration().initialize_transient_settings()
 
-    # render...
     error_callback = unreal.OnMoviePipelineExecutorErrored()
-
     def movie_error(pipeline_executor, pipeline_with_error, is_fatal, error_text):
         unreal.log(pipeline_executor)
         unreal.log(pipeline_with_error)
         unreal.log(is_fatal)
         unreal.log(error_text)
-
     error_callback.add_callable(movie_error)
 
+    # 关键：movie_finished回调自动继续渲染下一模式/下一轮
     def movie_finished(pipeline_executor, success):
         unreal.log('movie finished')
         unreal.log(pipeline_executor)
         unreal.log(success)
-        # unreal.log(self.rendering_stage)
-
-        # TODO: call render again with normals configuration
         if mode == 'rgb':
-            render(output_path=output_path, mode="normals")
-        # elif mode == 'normals':
-        #     unreal.SystemLibrary.quit_editor()
+            # 渲染Normal
+            render_with_callback(output_path=output_path, mode="normals")
+        elif mode == 'normals':
+            # 渲染Alpha
+            render_with_callback(output_path=output_path, mode="rgb_alpha")
+        elif mode == 'rgb_alpha':
+            global current_round
+            if current_round < RENDER_TIMES:
+                # 自动进入下一轮
+                render_one_round()
+            else:
+                unreal.log("========== All renders completed. ==========")
+                #unreal.SystemLibrary.quit_editor()
 
     finished_callback = unreal.OnMoviePipelineExecutorFinished()
     finished_callback.add_callable(movie_finished)
 
     unreal.log("Starting Executor")
-    # executor = subsystem.render_queue_with_executor(unreal.MoviePipelinePIEExecutor)
     global executor
     executor = unreal.MoviePipelinePIEExecutor(subsystem)
-    # if executor:
     executor.set_editor_property('on_executor_errored_delegate', error_callback)
     executor.set_editor_property('on_executor_finished_delegate', finished_callback)
-
     subsystem.render_queue_with_executor_instance(executor)
 
-
+# 启动
 if __name__ == '__main__':
-    # get sequencer and clean it (keep only camera) ······· ``
-    level_sequence = unreal.load_asset('/Game/RenderSequencer.RenderSequencer')
-    clean_sequencer(level_sequence)
+    current_round = 0
+    render_one_round()
 
-    # assumin a single camera and a single hdri
-    #camera, hdri_backdrop = find_relevant_assets() 
-    cameras, target_points, skylight = find_relevant_assets(level_sequence)
-
-    # find the intersect of keys
-    random_keys = [k for k in cameras.keys() if k in target_points.keys()]
-    random_key = random.choice(random_keys)
-    # random_key = random_keys[0]
-    camera = cameras[random_key]
-    target_point = target_points[random_key]
-
-    # # hdri
-    # random_hdri(hdri_backdrop)
-
-    # skylight
-    random_cubemap(skylight)
-    
-
-    location = target_point.get_actor_location()
-    # location = unreal.Vector(-990, -290, 0.0)
-
-    # # character
-    # selected_skeletal_mesh_path = select_random_asset('/Game/Retarget_Character/Male/', asset_class='SkeletalMesh')
-    # selected_skeletal_mesh_path = select_random_asset('/Game/Retarget_Character/Female/', asset_class='SkeletalMesh')
-    # print(selected_skeletal_mesh_path)
-    # #exit()
-    # actor = spawn_actor(asset_path=selected_skeletal_mesh_path, location=location)
-    # spawnable_actor = level_sequence.add_spawnable_from_instance(actor)
-
-    
-    # # animation (Selected random animation)
-    # selected_animation_path = select_random_asset('/Game/ActorCore_Sample_Motions/Idle_walk_sit_Male_Motion')
-    # selected_animation_path = select_random_asset('/Game/ActorCore_Sample_Motions/Pose_dance_catwalk_Female')
-    # add_animation_to_actor(spawnable_actor, animation_path=selected_animation_path)
-    gender = random.choice(['Male', 'Female'])
-    if gender == 'Male':
-        selected_skeletal_mesh_path = select_random_asset('/Game/Retarget_Character/Male/', asset_class='SkeletalMesh')
-        selected_animation_path = select_random_asset('/Game/ActorCore_Sample_Motions/Idle_walk_sit_Male_Motion')
-    else:
-        selected_skeletal_mesh_path = select_random_asset('/Game/Retarget_Character/Female/', asset_class='SkeletalMesh')
-        selected_animation_path = select_random_asset('/Game/ActorCore_Sample_Motions/Female_Animation')
-    print(f"Gender: {gender}")
-    print(f"Skeletal Mesh: {selected_skeletal_mesh_path}")
-    print(f"Animation: {selected_animation_path}")
-
-    actor = spawn_actor(asset_path=selected_skeletal_mesh_path, location=location)
-    spawnable_actor = level_sequence.add_spawnable_from_instance(actor)
-    add_animation_to_actor(spawnable_actor, animation_path=selected_animation_path)
-
-
-    # delete the original import (keeping only the spawnable actor)
-    unreal.get_editor_subsystem(unreal.EditorActorSubsystem).destroy_actor(actor)
- 
-    bind_camera_to_level_sequence(level_sequence, camera)
-
-    unreal.log(f"Selected character and animation: {selected_skeletal_mesh_path}, {selected_animation_path}")
-   
-    # this will render two passes (first is rgb following by normals)
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    render(output_path="D:\\SyntheticData\\auto\\" + timestamp + "\\", mode="rgb")
