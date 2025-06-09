@@ -130,7 +130,7 @@ def random_cubemap(skylight):
 def bind_camera_to_level_sequence(level_sequence, camera, character_location, start_frame=0, num_frames=0, move_radius=500):
     # Get the Camera Cuts track manually
     camera_cuts_track = None
-    for track in level_sequence.get_master_tracks():
+    for track in level_sequence.get_tracks():
         if track.get_class() == unreal.MovieSceneCameraCutTrack.static_class():
             camera_cuts_track = track
             break

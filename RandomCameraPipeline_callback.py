@@ -233,7 +233,7 @@ def render_one_round():
     bind_camera_to_level_sequence(level_sequence, camera, location, start_frame=0, num_frames=300, move_radius=800)
     unreal.log(f"[{current_round}/{RENDER_TIMES}] Selected character and animation: {selected_skeletal_mesh_path}, {selected_animation_path}")
 
-   
+            
     # 关键：把“继续下一轮”动作绑定到movie_finished回调里
     render_with_callback(output_path=output_path, mode="rgb")
 
